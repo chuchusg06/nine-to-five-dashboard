@@ -95,7 +95,7 @@ st.sidebar.title("Dashboard Controls")
 time_period = st.sidebar.selectbox(
     "Time Period",
     ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Year to Date", "All Time"],
-    index=1
+    index=4  # Changed from 1 to 4 to make "All Time" the default
 )
 
 # Channel filter
