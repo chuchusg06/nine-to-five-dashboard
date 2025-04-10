@@ -1,4 +1,3 @@
-# Save this as pages/02_channel_performance.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -12,12 +11,12 @@ from gspread_dataframe import get_as_dataframe
 
 # Page configuration
 st.set_page_config(
-    page_title="Channel Performance - Nine To Five",
-    page_icon="📊",
+    page_title="Channel Performance - Nine To Five Marketing",
+    page_icon="👔",
     layout="wide"
 )
 
-# Function to connect to Google Sheet (reuse the same function from main dashboard)
+# Function to connect to Google Sheet - reusing from main app
 @st.cache_resource
 def connect_to_google_sheet():
     # Create credentials from the service account info
@@ -28,680 +27,527 @@ def connect_to_google_sheet():
         "https://www.googleapis.com/auth/drive"
     ]
     
-    # Load credentials from env or file
+    # Load credentials from env, secrets, or file
     if 'GOOGLE_CREDENTIALS' in os.environ:
         credentials_dict = json.loads(os.environ['GOOGLE_CREDENTIALS'])
         credentials = Credentials.from_service_account_info(credentials_dict, scopes=scope)
     else:
-        credentials = Credentials.from_service_account_file('credentials/service_account.json', scopes=scope)
+        # Try to get credentials from streamlit secrets
+        try:
+            credentials_dict = st.secrets["gcp_service_account"]
+            credentials = Credentials.from_service_account_info(credentials_dict, scopes=scope)
+        except Exception as e:
+            st.sidebar.warning(f"Using local credentials file as fallback")
+            # Fall back to file
+            credentials = Credentials.from_service_account_file('credentials/service_account.json', scopes=scope)
     
     client = gspread.authorize(credentials)
     return client
 
-# Connect to the Google Sheet
-try:
-    client = connect_to_google_sheet()
-    sheet_id = "1NG2ZZCVGNb3pIfnmyGd1T9ppqQ6ObOYbvFAX--m_wdo"
-    spreadsheet = client.open_by_key(sheet_id)
-    
-    st.sidebar.success("Connected to Google Sheet!")
-except Exception as e:
-    st.sidebar.error(f"Error connecting to Google Sheet: {e}")
-    st.stop()
-
-# Function to load data from a specific sheet
-@st.cache_data(ttl=300)
+# Function to load data from a specific sheet - reusing from main app
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_data(sheet_name):
     try:
+        client = connect_to_google_sheet()
+        sheet_id = "1NG2ZZCVGNb3pIfnmyGd1T9ppqQ6ObOYbvFAX--m_wdo"
+        spreadsheet = client.open_by_key(sheet_id)
         worksheet = spreadsheet.worksheet(sheet_name)
         df = get_as_dataframe(worksheet, evaluate_formulas=True)
-        # Clean the dataframe (remove empty rows)
+        
+        # Clean the dataframe (remove empty rows and columns)
         df = df.dropna(how='all')
+        df = df.dropna(axis=1, how='all')
+        
         # Convert date column to datetime if it exists
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                
         return df
     except Exception as e:
         st.error(f"Error loading data from {sheet_name}: {e}")
         return pd.DataFrame()
 
 # Sidebar filters
-st.sidebar.title("Analysis Controls")
-
-# Allow selection of specific channel for detailed analysis
-selected_channel = st.sidebar.selectbox(
-    "Select Channel",
-    ["All Channels", "Social Organic", "Social Paid", "Affiliates", "Email"],
-    index=0
-)
+st.sidebar.title("Channel Performance")
 
 # Time period filter
 time_period = st.sidebar.selectbox(
     "Time Period",
     ["Last 7 Days", "Last 30 Days", "Last 90 Days", "Year to Date", "All Time"],
-    index=1
+    index=4  # Default to All Time
 )
 
-# Date range selector (more detailed for analysis)
-st.sidebar.markdown("### Custom Date Range")
-use_custom_dates = st.sidebar.checkbox("Use custom date range instead")
+# Channel selection
+channel_selection = st.sidebar.radio(
+    "Select Channel",
+    ["All Channels", "Social Paid", "Social Organic", "Email", "Affiliates"]
+)
 
-if use_custom_dates:
-    start_date = st.sidebar.date_input("Start Date", datetime.now() - timedelta(days=30))
-    end_date = st.sidebar.date_input("End Date", datetime.now())
-    if start_date > end_date:
-        st.sidebar.error("End date must be after start date")
+# Load data
+revenue_data = load_data("Raw Data - Revenue")
+social_data = load_data("Raw Data - Social Media")
+email_data = load_data("Raw Data - Email")
+affiliates_data = load_data("Raw Data - Affiliates")
+campaigns_data = load_data("Raw Data - Campaigns")
 
-# Function to filter data based on time period or custom dates
-def filter_by_time(df):
-    if 'Date' not in df.columns or df.empty:
-        return df
-        
-    if use_custom_dates:
-        start = pd.to_datetime(start_date)
-        end = pd.to_datetime(end_date) + timedelta(days=1)  # Include end date
-        return df[(df['Date'] >= start) & (df['Date'] <= end)]
-    
-    today = pd.to_datetime('today').normalize()
-    
-    if time_period == "Last 7 Days":
-        start_date = today - timedelta(days=7)
-    elif time_period == "Last 30 Days":
-        start_date = today - timedelta(days=30)
-    elif time_period == "Last 90 Days":
-        start_date = today - timedelta(days=90)
-    elif time_period == "Year to Date":
-        start_date = pd.to_datetime(f"{today.year}-01-01")
-    else:  # All Time
-        return df
-    
-    return df[df['Date'] >= start_date]
-
-# Function to filter data based on selected channel
-def filter_by_channel(df):
-    if selected_channel == "All Channels" or 'Channel' not in df.columns or df.empty:
+# Filter by selected channel
+def filter_by_channel(df, channel_col='Channel'):
+    if channel_selection == "All Channels" or channel_col not in df.columns or df.empty:
         return df
     else:
-        return df[df['Channel'] == selected_channel]
+        return df[df[channel_col] == channel_selection]
 
-# Apply all filters to a dataframe
-def apply_filters(df):
-    if df.empty:
-        return df
-        
-    df = filter_by_time(df)
-    df = filter_by_channel(df)
-    return df
+# Apply channel filter
+filtered_revenue = filter_by_channel(revenue_data)
+filtered_social = filter_by_channel(social_data, 'Platforms') if channel_selection in ["Social Paid", "Social Organic"] else social_data
+filtered_email = email_data if channel_selection == "Email" else email_data
+filtered_affiliates = affiliates_data if channel_selection == "Affiliates" else affiliates_data
+filtered_campaigns = filter_by_channel(campaigns_data)
 
-# Load all required data
-with st.spinner("Loading data from Google Sheets..."):
-    revenue_data = load_data("Raw Data - Revenue")
-    campaigns_data = load_data("Raw Data - Campaigns")
-    social_data = load_data("Raw Data - Social Media")
-    affiliates_data = load_data("Raw Data - Affiliates")
-    email_data = load_data("Raw Data - Email")
+# Page Title
+st.title("Channel Performance Analysis")
+st.markdown(f"### Performance metrics for {channel_selection}")
 
-# Apply filters
-filtered_revenue = apply_filters(revenue_data)
-filtered_campaigns = apply_filters(campaigns_data)
-filtered_social = filter_by_time(social_data)  # Only time filter for social
-filtered_affiliates = filter_by_time(affiliates_data)  # Only time filter for affiliates
-filtered_email = filter_by_time(email_data)  # Only time filter for email
+# Performance Overview
+st.markdown("## Performance Overview")
 
-# Page title based on selected channel
-if selected_channel == "All Channels":
-    st.title("Channel Performance Analysis")
-    st.markdown("Comparative analysis of all marketing channels")
-else:
-    st.title(f"{selected_channel} Performance Analysis")
-    st.markdown(f"Detailed analysis of {selected_channel} channel metrics and performance")
+# KPI Row
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
-# Channel Comparison (show only for All Channels)
-if selected_channel == "All Channels":
-    st.markdown("## Channel Comparison")
-    row1_col1, row1_col2 = st.columns(2)
+try:
+    # Calculate KPIs based on selected channel
+    total_revenue = filtered_revenue["Revenue"].sum() if not filtered_revenue.empty and "Revenue" in filtered_revenue.columns else 0
+    total_orders = filtered_revenue["Orders"].sum() if not filtered_revenue.empty and "Orders" in filtered_revenue.columns else 0
+    conversion_rate = (total_orders / filtered_revenue["Web Visitors"].sum() * 100) if not filtered_revenue.empty and "Web Visitors" in filtered_revenue.columns and filtered_revenue["Web Visitors"].sum() > 0 else 0
+    roas = total_revenue / filtered_revenue["Marketing Spend"].sum() if not filtered_revenue.empty and "Marketing Spend" in filtered_revenue.columns and filtered_revenue["Marketing Spend"].sum() > 0 else 0
     
-    with row1_col1:
+    with kpi1:
+        st.metric("Revenue", f"${total_revenue:,.2f}")
+    
+    with kpi2:
+        st.metric("Orders", f"{total_orders:,}")
+    
+    with kpi3:
+        st.metric("Conversion Rate", f"{conversion_rate:.2f}%")
+    
+    with kpi4:
+        st.metric("ROAS", f"{roas:.2f}x")
+except Exception as e:
+    st.error(f"Error calculating KPIs: {e}")
+
+# Performance Trend
+st.markdown("## Performance Trend")
+
+try:
+    if not filtered_revenue.empty and 'Date' in filtered_revenue.columns:
+        # Create a figure with multiple metrics
+        fig = go.Figure()
+        
+        if 'Revenue' in filtered_revenue.columns:
+            daily_revenue = filtered_revenue.groupby('Date')['Revenue'].sum().reset_index()
+            fig.add_trace(
+                go.Scatter(
+                    x=daily_revenue['Date'],
+                    y=daily_revenue['Revenue'],
+                    name='Revenue',
+                    mode='lines+markers',
+                    line=dict(color='blue', width=2)
+                )
+            )
+        
+        if 'Orders' in filtered_revenue.columns:
+            daily_orders = filtered_revenue.groupby('Date')['Orders'].sum().reset_index()
+            fig.add_trace(
+                go.Scatter(
+                    x=daily_orders['Date'],
+                    y=daily_orders['Orders'],
+                    name='Orders',
+                    mode='lines+markers',
+                    line=dict(color='green', width=2),
+                    yaxis='y2'
+                )
+            )
+        
+        # Update layout for dual y-axis
+        fig.update_layout(
+            title=f'{channel_selection} Performance Trend',
+            yaxis=dict(title='Revenue ($)'),
+            yaxis2=dict(
+                title='Orders',
+                overlaying='y',
+                side='right',
+                showgrid=False
+            ),
+            legend=dict(x=0.1, y=1.15, orientation='h')
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No performance trend data available for the selected channel.")
+except Exception as e:
+    st.error(f"Error creating Performance Trend chart: {e}")
+
+# Channel-specific metrics
+if channel_selection in ["Social Paid", "Social Organic"]:
+    st.markdown("## Social Media Metrics")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
         try:
-            if not filtered_revenue.empty and 'Channel' in filtered_revenue.columns:
-                # Calculate key metrics by channel
-                channel_metrics = filtered_revenue.groupby('Channel').agg({
-                    'Revenue': 'sum',
-                    'Orders': 'sum',
-                    'New Customers': 'sum',
-                    'Marketing Spend': 'sum'
+            if not filtered_social.empty and 'Platforms' in filtered_social.columns:
+                # Group by platform
+                platform_metrics = filtered_social.groupby('Platforms').agg({
+                    'Followers': 'mean',
+                    'Posts': 'sum',
+                    'Impressions': 'sum',
+                    'Engagement': 'sum'
                 }).reset_index()
                 
-                # Calculate derived metrics
-                channel_metrics['ROAS'] = channel_metrics['Revenue'] / channel_metrics['Marketing Spend'].replace(0, float('nan'))
-                channel_metrics['CPA'] = channel_metrics['Marketing Spend'] / channel_metrics['Orders'].replace(0, float('nan'))
-                channel_metrics['CAC'] = channel_metrics['Marketing Spend'] / channel_metrics['New Customers'].replace(0, float('nan'))
+                # Calculate engagement rate
+                platform_metrics['Engagement Rate (%)'] = (platform_metrics['Engagement'] / platform_metrics['Impressions'] * 100).round(2)
                 
-                # Format for display
-                display_metrics = channel_metrics.copy()
-                display_metrics['Revenue'] = display_metrics['Revenue'].apply(lambda x: f"${x:,.2f}")
-                display_metrics['ROAS'] = display_metrics['ROAS'].apply(lambda x: f"{x:.2f}x" if not pd.isna(x) else "N/A")
-                display_metrics['CPA'] = display_metrics['CPA'].apply(lambda x: f"${x:.2f}" if not pd.isna(x) else "N/A")
-                display_metrics['CAC'] = display_metrics['CAC'].apply(lambda x: f"${x:.2f}" if not pd.isna(x) else "N/A")
-                
-                # Display as table
-                st.dataframe(
-                    display_metrics[['Channel', 'Revenue', 'Orders', 'New Customers', 'ROAS', 'CPA', 'CAC']],
-                    column_config={
-                        "Channel": st.column_config.TextColumn("Channel"),
-                        "Revenue": st.column_config.TextColumn("Revenue"),
-                        "Orders": st.column_config.NumberColumn("Orders"),
-                        "New Customers": st.column_config.NumberColumn("New Customers"),
-                        "ROAS": st.column_config.TextColumn("ROAS"),
-                        "CPA": st.column_config.TextColumn("Cost per Acquisition"),
-                        "CAC": st.column_config.TextColumn("Customer Acq. Cost"),
-                    },
-                    use_container_width=True
-                )
-            else:
-                st.info("No channel comparison data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating channel comparison table: {e}")
-    
-    with row1_col2:
-        try:
-            if not filtered_revenue.empty and 'Channel' in filtered_revenue.columns and 'Revenue' in filtered_revenue.columns:
-                # Calculate revenue share
-                revenue_share = filtered_revenue.groupby('Channel')['Revenue'].sum().reset_index()
-                
-                # Create pie chart
-                fig = px.pie(
-                    revenue_share,
-                    values='Revenue',
-                    names='Channel',
-                    title='Revenue Share by Channel',
-                    color='Channel',
+                # Create bar chart for engagement rate
+                fig = px.bar(
+                    platform_metrics,
+                    x='Platforms',
+                    y='Engagement Rate (%)',
+                    title='Engagement Rate by Platform',
+                    color='Platforms',
                     color_discrete_sequence=px.colors.qualitative.Bold
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No revenue share data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating revenue share chart: {e}")
-    
-    # Channel efficiency comparison
-    st.markdown("### Channel Efficiency")
-    try:
-        if not filtered_revenue.empty and 'Channel' in filtered_revenue.columns:
-            # Prepare metrics for radar chart (normalize all to 0-1 scale)
-            channels = filtered_revenue['Channel'].unique()
-            
-            metrics_by_channel = {}
-            for channel in channels:
-                channel_data = filtered_revenue[filtered_revenue['Channel'] == channel]
-                
-                # Calculate key efficiency metrics
-                revenue = channel_data['Revenue'].sum()
-                spend = channel_data['Marketing Spend'].sum()
-                new_customers = channel_data['New Customers'].sum()
-                orders = channel_data['Orders'].sum()
-                visitors = channel_data['Web Visitors'].sum()
-                
-                roas = revenue / spend if spend > 0 else float('nan')
-                conv_rate = (orders / visitors) * 100 if visitors > 0 else 0
-                cac = spend / new_customers if new_customers > 0 else float('nan')
-                
-                metrics_by_channel[channel] = {
-                    'ROAS': roas,
-                    'Conversion Rate': conv_rate,
-                    'Revenue': revenue,
-                }
-            
-            # Create dataframe for radar chart
-            radar_data = []
-            for channel, metrics in metrics_by_channel.items():
-                for metric, value in metrics.items():
-                    radar_data.append({
-                        'Channel': channel,
-                        'Metric': metric,
-                        'Value': value
-                    })
-            
-            radar_df = pd.DataFrame(radar_data)
-            
-            # Normalize values
-            for metric in radar_df['Metric'].unique():
-                metric_min = radar_df[radar_df['Metric'] == metric]['Value'].min()
-                metric_max = radar_df[radar_df['Metric'] == metric]['Value'].max()
-                
-                if metric_max > metric_min:
-                    radar_df.loc[radar_df['Metric'] == metric, 'Normalized'] = (
-                        (radar_df.loc[radar_df['Metric'] == metric, 'Value'] - metric_min) / 
-                        (metric_max - metric_min)
-                    )
-                else:
-                    radar_df.loc[radar_df['Metric'] == metric, 'Normalized'] = 0.5
-            
-            # Create comparative radar chart for channels
-            radar_pivot = radar_df.pivot_table(
-                index='Metric', 
-                columns='Channel', 
-                values='Normalized'
-            ).reset_index()
-            
-            # Use Plotly for radar chart
-            fig = go.Figure()
-            
-            for channel in radar_pivot.columns[1:]:
-                fig.add_trace(go.Scatterpolar(
-                    r=radar_pivot[channel],
-                    theta=radar_pivot['Metric'],
-                    fill='toself',
-                    name=channel
-                ))
-            
-            fig.update_layout(
-                polar=dict(
-                    radialaxis=dict(
-                        visible=True,
-                        range=[0, 1]
-                    )
-                ),
-                showlegend=True,
-                title="Channel Efficiency Comparison (Normalized)"
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Show original values in a table
-            st.subheader("Channel Efficiency Metrics (Original Values)")
-            
-            original_metrics = pd.DataFrame(metrics_by_channel).T.reset_index()
-            original_metrics.columns = ['Channel', 'ROAS', 'Conversion Rate (%)', 'Revenue ($)']
-            
-            # Format for display
-            original_metrics['ROAS'] = original_metrics['ROAS'].apply(lambda x: f"{x:.2f}x" if not pd.isna(x) else "N/A")
-            original_metrics['Conversion Rate (%)'] = original_metrics['Conversion Rate (%)'].apply(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A")
-            original_metrics['Revenue ($)'] = original_metrics['Revenue ($)'].apply(lambda x: f"${x:,.2f}" if not pd.isna(x) else "N/A")
-            
-            st.dataframe(original_metrics, use_container_width=True)
-        else:
-            st.info("No channel efficiency data available for the selected filters.")
-    except Exception as e:
-        st.error(f"Error creating channel efficiency comparison: {e}")
-
-# Channel-specific analysis - show based on selection
-if selected_channel == "Social Organic" or selected_channel == "Social Paid":
-    st.markdown(f"## {selected_channel} Analysis")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        try:
-            # Show social media metrics if available
-            if not filtered_social.empty and 'Platforms' in filtered_social.columns:
-                # Calculate top-level social metrics
-                total_followers = filtered_social['Followers'].max() if 'Followers' in filtered_social.columns else 0
-                total_engagement = filtered_social['Engagement'].sum() if 'Engagement' in filtered_social.columns else 0
-                total_impressions = filtered_social['Impressions'].sum() if 'Impressions' in filtered_social.columns else 0
-                
-                # Create metrics display
-                social_metrics = {
-                    "Total Followers": f"{total_followers:,}",
-                    "Total Engagement": f"{total_engagement:,}",
-                    "Total Impressions": f"{total_impressions:,}",
-                    "Engagement Rate": f"{(total_engagement / total_impressions * 100) if total_impressions > 0 else 0:.2f}%"
-                }
-                
-                # Display metrics
-                for metric, value in social_metrics.items():
-                    st.metric(metric, value)
-                
-                # Platform breakdown
-                if 'Platforms' in filtered_social.columns and 'Engagement' in filtered_social.columns:
-                    platform_metrics = filtered_social.groupby('Platforms').agg({
-                        'Engagement': 'sum',
-                        'Impressions': 'sum',
-                        'Followers': 'max',
-                        'Website Clicks': 'sum'
-                    }).reset_index()
-                    
-                    platform_metrics['Engagement Rate'] = (platform_metrics['Engagement'] / platform_metrics['Impressions']) * 100
-                    
-                    # Format for display
-                    platform_metrics = platform_metrics.sort_values('Engagement', ascending=False)
-                    
-                    # Create bar chart for engagement by platform
-                    fig = px.bar(
-                        platform_metrics,
-                        x='Platforms',
-                        y='Engagement',
-                        title='Social Engagement by Platform',
-                        color='Platforms'
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-            else:
                 st.info("No social media data available for the selected filters.")
         except Exception as e:
-            st.error(f"Error creating social media analysis: {e}")
+            st.error(f"Error creating Social Media Engagement chart: {e}")
     
     with col2:
         try:
-            # Show social conversion data if available
-            if not filtered_revenue.empty and selected_channel in filtered_revenue['Channel'].values:
-                # Filter to just this channel
-                channel_data = filtered_revenue[filtered_revenue['Channel'] == selected_channel]
+            if not filtered_social.empty and 'Date' in filtered_social.columns:
+                # Group by date
+                daily_followers = filtered_social.groupby('Date')['New Followers'].sum().reset_index()
                 
-                # Create time series of metrics
-                metrics_over_time = channel_data.groupby('Date').agg({
-                    'Revenue': 'sum',
-                    'Orders': 'sum',
-                    'Web Visitors': 'sum'
-                }).reset_index()
-                
-                metrics_over_time['Conversion Rate'] = (metrics_over_time['Orders'] / metrics_over_time['Web Visitors']) * 100
-                
-                # Create line chart for conversion rate over time
+                # Create line chart for follower growth
                 fig = px.line(
-                    metrics_over_time,
+                    daily_followers,
                     x='Date',
-                    y='Conversion Rate',
-                    title=f'{selected_channel} Conversion Rate Over Time (%)',
-                    markers=True
+                    y='New Followers',
+                    title='Daily New Followers',
+                    markers=True,
+                    color_discrete_sequence=['#FF6B6B']
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Create revenue over time chart
-                fig2 = px.line(
-                    metrics_over_time,
-                    x='Date',
-                    y='Revenue',
-                    title=f'{selected_channel} Revenue Over Time',
-                    markers=True
-                )
-                
-                st.plotly_chart(fig2, use_container_width=True)
             else:
-                st.info(f"No {selected_channel} conversion data available for the selected filters.")
+                st.info("No follower data available for the selected filters.")
         except Exception as e:
-            st.error(f"Error creating social conversion analysis: {e}")
-
-elif selected_channel == "Affiliates":
-    st.markdown("## Affiliates Analysis")
-    col1, col2 = st.columns(2)
+            st.error(f"Error creating Follower Growth chart: {e}")
     
-    with col1:
-        try:
-            if not filtered_affiliates.empty and 'Type' in filtered_affiliates.columns:
-                # Group affiliates by type
-                affiliate_types = filtered_affiliates.groupby('Type').agg({
-                    'Estimated Value': 'sum',
-                    'Cost': 'sum',
-                    'Link Clicks': 'sum',
-                    'Conversions': 'sum'
-                }).reset_index()
-                
-                # Calculate ROI
-                affiliate_types['ROI'] = affiliate_types['Estimated Value'] / affiliate_types['Cost'].replace(0, float('nan'))
-                
-                # Create bar chart of value by type
-                fig = px.bar(
-                    affiliate_types,
-                    x='Type',
-                    y='Estimated Value',
-                    title='Affiliate Value by Type',
-                    color='Type'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Display affiliate metrics table
-                affiliate_types['Estimated Value'] = affiliate_types['Estimated Value'].apply(lambda x: f"${x:,.2f}")
-                affiliate_types['Cost'] = affiliate_types['Cost'].apply(lambda x: f"${x:,.2f}")
-                affiliate_types['ROI'] = affiliate_types['ROI'].apply(lambda x: f"{x:.2f}x" if not pd.isna(x) else "N/A")
-                
-                st.dataframe(
-                    affiliate_types,
-                    column_config={
-                        "Type": st.column_config.TextColumn("Affiliate Type"),
-                        "Estimated Value": st.column_config.TextColumn("Value"),
-                        "Cost": st.column_config.TextColumn("Cost"),
-                        "Link Clicks": st.column_config.NumberColumn("Clicks"),
-                        "Conversions": st.column_config.NumberColumn("Conversions"),
-                        "ROI": st.column_config.TextColumn("ROI"),
-                    },
-                    use_container_width=True
-                )
-            else:
-                st.info("No affiliate data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating affiliate analysis: {e}")
+    # Social post performance
+    st.markdown("### Social Post Metrics")
     
-    with col2:
-        try:
-            if not filtered_affiliates.empty and 'Style Type' in filtered_affiliates.columns:
-                # Group by style type
-                style_performance = filtered_affiliates.groupby('Style Type').agg({
-                    'Estimated Value': 'sum',
-                    'Conversions': 'sum'
-                }).reset_index()
-                
-                # Create pie chart
-                fig = px.pie(
-                    style_performance,
-                    values='Estimated Value',
-                    names='Style Type',
-                    title='Affiliate Value by Style Type',
-                    color='Style Type'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show top affiliate campaigns if available
-                if 'Product Featured' in filtered_affiliates.columns:
-                    top_products = filtered_affiliates.groupby('Product Featured').agg({
-                        'Estimated Value': 'sum',
-                        'Conversions': 'sum'
-                    }).reset_index()
-                    
-                    top_products = top_products.sort_values('Estimated Value', ascending=False).head(5)
-                    
-                    st.subheader("Top Products in Affiliate Campaigns")
-                    
-                    top_products['Estimated Value'] = top_products['Estimated Value'].apply(lambda x: f"${x:,.2f}")
-                    
-                    st.dataframe(
-                        top_products,
-                        column_config={
-                            "Product Featured": st.column_config.TextColumn("Product"),
-                            "Estimated Value": st.column_config.TextColumn("Value"),
-                            "Conversions": st.column_config.NumberColumn("Conversions"),
-                        },
-                        use_container_width=True
-                    )
-            else:
-                st.info("No affiliate style data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating affiliate style analysis: {e}")
-
-elif selected_channel == "Email":
-    st.markdown("## Email Marketing Analysis")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        try:
-            if not filtered_email.empty and 'Email Type' in filtered_email.columns:
-                # Calculate key email metrics
-                total_subscribers = filtered_email['Subscribers'].max() if 'Subscribers' in filtered_email.columns else 0
-                total_sent = filtered_email['Email Sent'].sum() if 'Email Sent' in filtered_email.columns else 0
-                total_revenue = filtered_email['Revenue'].sum() if 'Revenue' in filtered_email.columns else 0
-                
-                # Calculate averages
-                avg_open_rate = filtered_email['Open Rate %'].mean() if 'Open Rate %' in filtered_email.columns else 0
-                avg_click_rate = filtered_email['Click Rate %'].mean() if 'Click Rate %' in filtered_email.columns else 0
-                avg_conversion_rate = filtered_email['Conversion Rate %'].mean() if 'Conversion Rate %' in filtered_email.columns else 0
-                
-                # Calculate revenue per email
-                revenue_per_email = total_revenue / total_sent if total_sent > 0 else 0
-                
-                # Display key metrics
-                email_metrics = {
-                    "Total Subscribers": f"{total_subscribers:,}",
-                    "Total Emails Sent": f"{total_sent:,}",
-                    "Total Revenue": f"${total_revenue:,.2f}",
-                    "Revenue per Email": f"${revenue_per_email:.2f}"
-                }
-                
-                for metric, value in email_metrics.items():
-                    st.metric(metric, value)
-                
-                # Group by email type
-                email_types = filtered_email.groupby('Email Type').agg({
-                    'Revenue': 'sum',
-                    'Open Rate %': 'mean',
-                    'Click Rate %': 'mean',
-                    'Conversion Rate %': 'mean'
-                }).reset_index()
-                
-                # Create bar chart for email performance by type
-                fig = px.bar(
-                    email_types,
-                    x='Email Type',
-                    y='Revenue',
-                    title='Email Revenue by Type',
-                    color='Email Type'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No email marketing data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating email marketing analysis: {e}")
-    
-    with col2:
-        try:
-            if not filtered_email.empty and 'Email Type' in filtered_email.columns:
-                # Create metrics comparison chart
-                email_metrics_long = pd.melt(
-                    filtered_email,
-                    id_vars=['Email Type', 'Campaign Name'],
-                    value_vars=['Open Rate %', 'Click Rate %', 'Conversion Rate %'],
-                    var_name='Metric',
-                    value_name='Percentage'
-                )
-                
-                # Group by type and metric
-                email_metrics_summary = email_metrics_long.groupby(['Email Type', 'Metric'])['Percentage'].mean().reset_index()
-                
-                # Create grouped bar chart
-                fig = px.bar(
-                    email_metrics_summary,
-                    x='Email Type',
-                    y='Percentage',
-                    color='Metric',
-                    title='Email Performance Metrics by Type (%)',
-                    barmode='group'
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show campaign performance if available
-                st.subheader("Top Email Campaigns")
-                
-                top_campaigns = filtered_email.sort_values('Revenue', ascending=False).head(5)
-                
-                top_campaigns_display = top_campaigns[['Campaign Name', 'Email Type', 'Open Rate %', 'Click Rate %', 'Conversion Rate %', 'Revenue']].copy()
-                
-                # Format for display
-                top_campaigns_display['Open Rate %'] = top_campaigns_display['Open Rate %'].apply(lambda x: f"{x:.2f}%")
-                top_campaigns_display['Click Rate %'] = top_campaigns_display['Click Rate %'].apply(lambda x: f"{x:.2f}%")
-                top_campaigns_display['Conversion Rate %'] = top_campaigns_display['Conversion Rate %'].apply(lambda x: f"{x:.2f}%")
-                top_campaigns_display['Revenue'] = top_campaigns_display['Revenue'].apply(lambda x: f"${x:,.2f}")
-                
-                st.dataframe(
-                    top_campaigns_display,
-                    column_config={
-                        "Campaign Name": st.column_config.TextColumn("Campaign"),
-                        "Email Type": st.column_config.TextColumn("Type"),
-                        "Open Rate %": st.column_config.TextColumn("Open Rate"),
-                        "Click Rate %": st.column_config.TextColumn("Click Rate"),
-                        "Conversion Rate %": st.column_config.TextColumn("Conv. Rate"),
-                        "Revenue": st.column_config.TextColumn("Revenue"),
-                    },
-                    use_container_width=True
-                )
-            else:
-                st.info("No email campaign data available for the selected filters.")
-        except Exception as e:
-            st.error(f"Error creating email campaign analysis: {e}")
-
-# Campaign Performance by Channel (show for specific channels or all)
-st.markdown(f"## {'Channel' if selected_channel == 'All Channels' else selected_channel} Campaign Performance")
-
-try:
-    if not filtered_campaigns.empty and 'Channel' in filtered_campaigns.columns:
-        # Filter campaigns by selected channel if needed
-        if selected_channel != "All Channels":
-            channel_campaigns = filtered_campaigns[filtered_campaigns['Channel'] == selected_channel]
-        else:
-            channel_campaigns = filtered_campaigns
-        
-        if not channel_campaigns.empty:
-            # Calculate campaign metrics
-            campaign_metrics = channel_campaigns[['Campaign Name', 'Channel', 'Campaign Type', 'Revenue', 'Spend', 'Conversions', 'ROAS']].copy()
+    try:
+        if not filtered_social.empty:
+            # Create metrics for social performance
+            total_posts = filtered_social['Posts'].sum() if 'Posts' in filtered_social.columns else 0
+            total_impressions = filtered_social['Impressions'].sum() if 'Impressions' in filtered_social.columns else 0
+            total_engagement = filtered_social['Engagement'].sum() if 'Engagement' in filtered_social.columns else 0
             
-            # Sort by revenue
-            campaign_metrics = campaign_metrics.sort_values('Revenue', ascending=False)
+            # Calculate averages
+            avg_impressions_per_post = total_impressions / total_posts if total_posts > 0 else 0
+            avg_engagement_per_post = total_engagement / total_posts if total_posts > 0 else 0
+            
+            # Display metrics
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Posts", f"{total_posts}")
+            
+            with col2:
+                st.metric("Avg. Impressions per Post", f"{avg_impressions_per_post:,.0f}")
+            
+            with col3:
+                st.metric("Avg. Engagement per Post", f"{avg_engagement_per_post:,.0f}")
+        else:
+            st.info("No social post data available for the selected filters.")
+    except Exception as e:
+        st.error(f"Error calculating Social Post Metrics: {e}")
+
+elif channel_selection == "Email":
+    st.markdown("## Email Marketing Metrics")
+    
+    try:
+        if not filtered_email.empty:
+            # Create a summary table by email type
+            email_summary = filtered_email.groupby('Email Type').agg({
+                'Email Sent': 'sum',
+                'Open Rate %': 'mean',
+                'Click Rate %': 'mean',
+                'Conversion Rate %': 'mean',
+                'Revenue': 'sum'
+            }).reset_index()
             
             # Format for display
-            display_metrics = campaign_metrics.copy()
-            display_metrics['Revenue'] = display_metrics['Revenue'].apply(lambda x: f"${x:,.2f}")
-            display_metrics['Spend'] = display_metrics['Spend'].apply(lambda x: f"${x:,.2f}")
-            display_metrics['ROAS'] = display_metrics['ROAS'].apply(lambda x: f"{x:.2f}x")
+            display_email = email_summary.copy()
+            display_email['Open Rate %'] = display_email['Open Rate %'].round(2)
+            display_email['Click Rate %'] = display_email['Click Rate %'].round(2)
+            display_email['Conversion Rate %'] = display_email['Conversion Rate %'].round(2)
+            display_email['Revenue'] = display_email['Revenue'].apply(lambda x: f"${x:,.2f}")
+            display_email['Revenue Per Email'] = (email_summary['Revenue'] / email_summary['Email Sent']).apply(lambda x: f"${x:.2f}")
             
             # Display as table
             st.dataframe(
-                display_metrics,
+                display_email,
                 column_config={
-                    "Campaign Name": st.column_config.TextColumn("Campaign"),
-                    "Channel": st.column_config.TextColumn("Channel"),
-                    "Campaign Type": st.column_config.TextColumn("Type"),
+                    "Email Type": st.column_config.TextColumn("Email Type"),
+                    "Email Sent": st.column_config.NumberColumn("Emails Sent", format="%d"),
+                    "Open Rate %": st.column_config.NumberColumn("Open Rate", format="%.2f%%"),
+                    "Click Rate %": st.column_config.NumberColumn("Click Rate", format="%.2f%%"),
+                    "Conversion Rate %": st.column_config.NumberColumn("Conv. Rate", format="%.2f%%"),
                     "Revenue": st.column_config.TextColumn("Revenue"),
-                    "Spend": st.column_config.TextColumn("Spend"),
-                    "Conversions": st.column_config.NumberColumn("Conversions"),
-                    "ROAS": st.column_config.TextColumn("ROAS"),
+                    "Revenue Per Email": st.column_config.TextColumn("Rev. Per Email")
                 },
                 use_container_width=True
             )
             
-            # Create campaign type comparison (if more than one type)
-            campaign_types = channel_campaigns['Campaign Type'].unique()
+            # Create comparison chart for email metrics
+            fig = px.bar(
+                email_summary,
+                x='Email Type',
+                y=['Open Rate %', 'Click Rate %', 'Conversion Rate %'],
+                title='Email Performance Metrics by Type',
+                barmode='group',
+                color_discrete_sequence=px.colors.qualitative.Safe
+            )
             
-            if len(campaign_types) > 1:
-                campaign_type_metrics = channel_campaigns.groupby('Campaign Type').agg({
-                    'Revenue': 'sum',
-                    'Spend': 'sum',
-                    'Conversions': 'sum'
-                }).reset_index()
-                
-                campaign_type_metrics['ROAS'] = campaign_type_metrics['Revenue'] / campaign_type_metrics['Spend']
-                campaign_type_metrics['CPA'] = campaign_type_metrics['Spend'] / campaign_type_metrics['Conversions']
-                
-                # Create bar chart for campaign type performance
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No email marketing data available for the selected filters.")
+    except Exception as e:
+        st.error(f"Error creating Email Marketing Metrics: {e}")
+
+elif channel_selection == "Affiliates":
+    st.markdown("## Affiliate & Influencer Metrics")
+    
+    try:
+        if not filtered_affiliates.empty and 'Type' in filtered_affiliates.columns:
+            # Group by type
+            affiliate_metrics = filtered_affiliates.groupby('Type').agg({
+                'Estimated Value': 'sum',
+                'Cost': 'sum',
+                'Engagement': 'sum',
+                'Conversions': 'sum'
+            }).reset_index()
+            
+            # Calculate ROI
+            affiliate_metrics['ROI'] = (affiliate_metrics['Estimated Value'] / affiliate_metrics['Cost']).round(2)
+            
+            # Create ROI chart
+            fig = px.bar(
+                affiliate_metrics,
+                x='Type',
+                y='ROI',
+                title='ROI by Affiliate Type',
+                color='Type',
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Create metrics display
+            col1, col2, col3, col4 = st.columns(4)
+            
+            total_value = affiliate_metrics['Estimated Value'].sum()
+            total_cost = affiliate_metrics['Cost'].sum()
+            total_engagement = affiliate_metrics['Engagement'].sum()
+            total_conversions = affiliate_metrics['Conversions'].sum()
+            
+            with col1:
+                st.metric("Estimated Value", f"${total_value:,.2f}")
+            
+            with col2:
+                st.metric("Total Cost", f"${total_cost:,.2f}")
+            
+            with col3:
+                st.metric("ROI", f"{(total_value / total_cost if total_cost > 0 else 0):.2f}x")
+            
+            with col4:
+                st.metric("Conversions", f"{total_conversions:,}")
+            
+            # Display detailed metrics table
+            st.markdown("### Affiliate Performance Details")
+            
+            # Format for display
+            display_metrics = affiliate_metrics.copy()
+            display_metrics['Estimated Value'] = display_metrics['Estimated Value'].apply(lambda x: f"${x:,.2f}")
+            display_metrics['Cost'] = display_metrics['Cost'].apply(lambda x: f"${x:,.2f}")
+            display_metrics['ROI'] = display_metrics['ROI'].apply(lambda x: f"{x:.2f}x")
+            display_metrics['Cost Per Conversion'] = (affiliate_metrics['Cost'] / affiliate_metrics['Conversions']).apply(lambda x: f"${x:.2f}" if not pd.isna(x) else "$0.00")
+            
+            st.dataframe(
+                display_metrics,
+                column_config={
+                    "Type": st.column_config.TextColumn("Affiliate Type"),
+                    "Estimated Value": st.column_config.TextColumn("Est. Value"),
+                    "Cost": st.column_config.TextColumn("Cost"),
+                    "Engagement": st.column_config.NumberColumn("Engagement", format="%d"),
+                    "Conversions": st.column_config.NumberColumn("Conversions", format="%d"),
+                    "ROI": st.column_config.TextColumn("ROI"),
+                    "Cost Per Conversion": st.column_config.TextColumn("Cost/Conv.")
+                },
+                use_container_width=True
+            )
+        else:
+            st.info("No affiliate data available for the selected filters.")
+    except Exception as e:
+        st.error(f"Error creating Affiliate Metrics: {e}")
+
+else:  # All Channels comparison
+    st.markdown("## Channel Comparison")
+    
+    try:
+        if not revenue_data.empty and 'Channel' in revenue_data.columns:
+            # Group by channel
+            channel_comparison = revenue_data.groupby('Channel').agg({
+                'Revenue': 'sum',
+                'Orders': 'sum',
+                'Web Visitors': 'sum',
+                'Marketing Spend': 'sum'
+            }).reset_index()
+            
+          # Calculate metrics
+            channel_comparison['Conversion Rate (%)'] = (channel_comparison['Orders'] / channel_comparison['Web Visitors'] * 100).round(2)
+            channel_comparison['ROAS'] = (channel_comparison['Revenue'] / channel_comparison['Marketing Spend']).round(2)
+            channel_comparison['CPC'] = (channel_comparison['Marketing Spend'] / channel_comparison['Web Visitors']).round(2)
+            
+            # Create comparison chart
+            fig = px.bar(
+                channel_comparison,
+                x='Channel',
+                y='Revenue',
+                title='Revenue by Channel',
+                color='Channel',
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Create metrics comparison
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Conversion Rate comparison
                 fig = px.bar(
-                    campaign_type_metrics,
-                    x='Campaign Type',
-                    y='Revenue',
-                    title='Campaign Performance by Type',
-                    color='Campaign Type'
+                    channel_comparison,
+                    x='Channel',
+                    y='Conversion Rate (%)',
+                    title='Conversion Rate by Channel',
+                    color='Channel',
+                    color_discrete_sequence=px.colors.qualitative.Set2
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # ROAS comparison
+                fig = px.bar(
+                    channel_comparison,
+                    x='Channel',
+                    y='ROAS',
+                    title='ROAS by Channel',
+                    color='Channel',
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Display comparison table
+            st.markdown("### Channel Performance Metrics")
+            
+            # Format for display
+            display_comparison = channel_comparison.copy()
+            display_comparison['Revenue'] = display_comparison['Revenue'].apply(lambda x: f"${x:,.2f}")
+            display_comparison['Marketing Spend'] = display_comparison['Marketing Spend'].apply(lambda x: f"${x:,.2f}")
+            display_comparison['CPC'] = display_comparison['CPC'].apply(lambda x: f"${x:.2f}")
+            display_comparison['ROAS'] = display_comparison['ROAS'].apply(lambda x: f"{x:.2f}x")
+            
+            st.dataframe(
+                display_comparison,
+                column_config={
+                    "Channel": st.column_config.TextColumn("Channel"),
+                    "Revenue": st.column_config.TextColumn("Revenue"),
+                    "Orders": st.column_config.NumberColumn("Orders", format="%d"),
+                    "Web Visitors": st.column_config.NumberColumn("Visitors", format="%d"),
+                    "Marketing Spend": st.column_config.TextColumn("Ad Spend"),
+                    "Conversion Rate (%)": st.column_config.NumberColumn("Conv. Rate", format="%.2f%%"),
+                    "ROAS": st.column_config.TextColumn("ROAS"),
+                    "CPC": st.column_config.TextColumn("Cost Per Click")
+                },
+                use_container_width=True
+            )
         else:
-            st.info(f"No {selected_channel} campaign data available for the selected filters.")
-    else:
-        st.info("No campaign data available for the selected filters.")
-except Exception as e:
-    st.error(f"Error creating campaign performance analysis: {e}")
+            st.info("No channel comparison data available for the selected filters.")
+    except Exception as e:
+        st.error(f"Error creating Channel Comparison: {e}")
 
-# Footer with update timestamp
+# Campaign Performance
+st.markdown("## Campaign Performance")
+
+try:
+    if not filtered_campaigns.empty and 'Campaign Name' in filtered_campaigns.columns:
+        # Select relevant columns
+        campaign_data = filtered_campaigns[['Campaign Name', 'Channel', 'Campaign Type', 'Revenue', 'Spend', 'ROAS']].copy()
+        
+        # Sort by revenue
+        campaign_data = campaign_data.sort_values('Revenue', ascending=False)
+        
+        # Convert to proper formats for display
+        display_campaign = campaign_data.copy()
+        display_campaign['Revenue'] = display_campaign['Revenue'].apply(lambda x: f"${x:,.2f}")
+        display_campaign['Spend'] = display_campaign['Spend'].apply(lambda x: f"${x:,.2f}")
+        display_campaign['ROAS'] = display_campaign['ROAS'].apply(lambda x: f"{x:.2f}x")
+        
+        # Display as table
+        st.dataframe(
+            display_campaign,
+            column_config={
+                "Campaign Name": st.column_config.TextColumn("Campaign"),
+                "Channel": st.column_config.TextColumn("Channel"),
+                "Campaign Type": st.column_config.TextColumn("Type"),
+                "Revenue": st.column_config.TextColumn("Revenue"),
+                "Spend": st.column_config.TextColumn("Spend"),
+                "ROAS": st.column_config.TextColumn("ROAS")
+            },
+            use_container_width=True
+        )
+        
+        # Campaign type performance
+        campaign_type_perf = filtered_campaigns.groupby('Campaign Type').agg({
+            'Revenue': 'sum',
+            'Spend': 'sum'
+        }).reset_index()
+        
+        campaign_type_perf['ROAS'] = (campaign_type_perf['Revenue'] / campaign_type_perf['Spend']).round(2)
+        
+        # Create chart
+        fig = px.bar(
+            campaign_type_perf,
+            x='Campaign Type',
+            y='ROAS',
+            title='ROAS by Campaign Type',
+            color='Campaign Type',
+            color_discrete_sequence=px.colors.qualitative.Dark2
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No campaign performance data available for the selected filters.")
+except Exception as e:
+    st.error(f"Error creating Campaign Performance section: {e}")
+
+# Footer
 st.markdown("---")
 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 st.caption(f"Data last updated: {current_time}")
